@@ -24,16 +24,8 @@ concurrency:
 
 jobs:
   release:
-    runs-on: ${{ matrix.os }}
+    runs-on: windows-2022
     environment: release
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: windows-2022
-            arch: x86_64
-          - os: windows-11-arm
-            arch: arm64
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -55,11 +47,6 @@ jobs:
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
-
-      - name: Add Windows ARM64 target
-        if: matrix.arch == 'arm64'
-        shell: pwsh
-        run: rustup target add aarch64-pc-windows-msvc
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
@@ -117,14 +104,8 @@ jobs:
           fi
 
       - name: Build Tauri App (Windows x64)
-        if: matrix.arch == 'x86_64'
         shell: pwsh
         run: pnpm tauri build
-
-      - name: Build Tauri App (Windows ARM64)
-        if: matrix.arch == 'arm64'
-        shell: pwsh
-        run: pnpm tauri build --target aarch64-pc-windows-msvc --bundles msi
 
       - name: List generated bundles (debug)
         if: always()
@@ -134,17 +115,13 @@ jobs:
           Get-ChildItem -Path src-tauri/target -Recurse -Include *.msi,*.exe,*.nsis,*.zip -ErrorAction SilentlyContinue |
             Select-Object FullName,Length
 
-      - name: Prepare Windows Assets
+      - name: Prepare Windows x64 Assets
         shell: pwsh
-        env:
-          WINDOWS_RELEASE_ARCH: ${{ matrix.arch }}
         run: |
           $ErrorActionPreference = 'Stop'
           New-Item -ItemType Directory -Force -Path release-assets | Out-Null
           $VERSION = "v${{ steps.ver.outputs.version }}"
-          $isArm64 = $env:WINDOWS_RELEASE_ARCH -eq 'arm64'
-          $targetRoot = if ($isArm64) { 'src-tauri/target/aarch64-pc-windows-msvc/release' } else { 'src-tauri/target/release' }
-          $assetSuffix = if ($isArm64) { '-arm64' } else { '' }
+          $targetRoot = 'src-tauri/target/release'
 
           # MSI installer (+ .sig if present)
           $msi = Get-ChildItem -Path (Join-Path $targetRoot 'bundle/msi') -Recurse -Include *.msi -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -152,41 +129,34 @@ jobs:
             $msi = Get-ChildItem -Path (Join-Path $targetRoot 'bundle') -Recurse -Include *.msi -ErrorAction SilentlyContinue | Select-Object -First 1
           }
           if ($msi) {
-            $dest = "CC-Switch-$VERSION-Windows$assetSuffix.msi"
+            $dest = "CC-Switch-$VERSION-Windows.msi"
             Copy-Item $msi.FullName (Join-Path release-assets $dest)
             Write-Host "Installer copied: $dest"
             $sigPath = "$($msi.FullName).sig"
             if (Test-Path $sigPath) {
               Copy-Item $sigPath (Join-Path release-assets "$dest.sig")
             }
-          } elseif (-not $isArm64) {
-            Write-Warning 'No MSI installer found'
           } else {
-            throw 'No Windows ARM64 MSI installer found'
+            Write-Warning 'No MSI installer found'
           }
 
-          # NSIS installer (if any; newer tauri produces NSIS too)
+          # NSIS installer (if any; newer tauri also produces NSIS)
           $nsis = Get-ChildItem -Path (Join-Path $targetRoot 'bundle/nsis') -Recurse -Include *.exe -ErrorAction SilentlyContinue | Select-Object -First 1
           if ($nsis) {
-            $dest = "CC-Switch-$VERSION-Windows$assetSuffix-Setup.exe"
+            $dest = "CC-Switch-$VERSION-Windows-Setup.exe"
             Copy-Item $nsis.FullName (Join-Path release-assets $dest)
             Write-Host "NSIS setup copied: $dest"
           }
 
           # Portable zip (exe only, not part of updater)
-          $exeCandidates = if ($isArm64) {
-            @('src-tauri/target/aarch64-pc-windows-msvc/release/cc-switch.exe')
-          } else {
-            @('src-tauri/target/release/cc-switch.exe')
-          }
-          $exePath = $exeCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
-          if ($exePath) {
+          $exePath = 'src-tauri/target/release/cc-switch.exe'
+          if (Test-Path $exePath) {
             $portableDir = 'release-assets/CC-Switch-Portable'
             New-Item -ItemType Directory -Force -Path $portableDir | Out-Null
             Copy-Item $exePath $portableDir
             @('# CC Switch portable build marker', 'portable=true') |
               Set-Content -Path (Join-Path $portableDir 'portable.ini') -Encoding UTF8
-            Compress-Archive -Path "$portableDir/*" -DestinationPath "release-assets/CC-Switch-$VERSION-Windows$assetSuffix-Portable.zip" -Force
+            Compress-Archive -Path "$portableDir/*" -DestinationPath "release-assets/CC-Switch-$VERSION-Windows-Portable.zip" -Force
             Remove-Item -Recurse -Force $portableDir
             Write-Host "Portable zip created"
           } else {
@@ -196,7 +166,7 @@ jobs:
       - name: Upload release artifacts to workflow
         uses: actions/upload-artifact@v4
         with:
-          name: release-assets-Windows-${{ matrix.arch }}
+          name: release-assets-Windows-x64
           path: release-assets/*
           if-no-files-found: error
 
@@ -211,9 +181,8 @@ jobs:
       - name: Download built release artifacts
         uses: actions/download-artifact@v4
         with:
-          pattern: release-assets-*
+          name: release-assets-Windows-x64
           path: release-assets
-          merge-multiple: true
 
       - name: List downloaded release artifacts
         shell: bash
