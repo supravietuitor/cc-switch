@@ -18,6 +18,24 @@ English | [中文](README_ZH.md) | [日本語](README_JA.md) | [Deutsch](README_
 
 </div>
 
+## 🔀 About this fork (本 fork 说明)
+
+> **⚠️ This is a personal test fork — not the official release.**
+> **For the official version, see the upstream repo: [farion1231/cc-switch](https://github.com/farion1231/cc-switch).**
+>
+> **⚠️ 本仓库是个人测试版 fork，非官方正式版。**
+> **请前往上游原仓库获取正式版：[farion1231/cc-switch](https://github.com/farion1231/fork)。**
+
+This fork makes the following personal tweaks on top of upstream (v3.18.0):
+
+1. **Tencent COS support for S3 sync** — adds virtual-hosted-style addressing (`force_path_style` / `use_path_style`) to the S3 sync backend, so Tencent Cloud COS buckets work with the built-in cloud config sync. (Upstream only supported AWS S3 and path-style endpoints.)
+2. **OpenCode Go referral link** — replaced the upstream default referral (`?ref=2YTRG2NGTX`) with the fork owner's referral (`?ref=R6Q6B79CYJ`) in the OpenCode Go provider preset across all apps. (See the sponsor section below for the original upstream partners — those are unchanged.)
+
+本 fork 在上游 v3.18.0 基础上做了两处个人改动：
+
+1. **腾讯云 COS 的 S3 同步支持** — 给 S3 同步后端增加了 virtual-hosted-style 地址支持（`force_path_style` / `use_path_style` 开关），让腾讯云 COS 存储桶也能用于内置的云端配置同步。（上游只支持 AWS S3 与 path-style 端点。）
+2. **OpenCode Go 推广链接** — 把 OpenCode Go 供应商预设里上游默认推广（`?ref=2YTRG2NGTX`）换成了 fork 维护者的推广（`?ref=R6Q6B79CYJ`），覆盖各应用入口。下方原本的上游合作伙伴推广保持不变。
+
 ## ❤️Sponsor
 
 > [Want to appear here?](mailto:farion1231@gmail.com)
