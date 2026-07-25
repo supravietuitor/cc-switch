@@ -92,12 +92,12 @@ jobs:
             echo "COS_MODE=fork_preserved" >> "$GITHUB_ENV"
           fi
 
-      - name: Restore fork config (only when preserving fork)
-        if: steps.detect.outputs.ahead != '0' && steps.detect.outputs.cos_upstream_touched == '0'
+      - name: Restore fork release/updater/promo (always)
+        if: steps.detect.outputs.ahead != '0'
         shell: bash
         run: |
           set -euo pipefail
-          # 1) release.yml 保持 fork 版（强制 ours）
+          # 1) release.yml 保持 fork 版（无论 COS 模式都保 fork 发布链路）
           git checkout origin/main -- .github/workflows/release.yml
 
           # 2) tauri.conf.json: 还原 updater pubkey + endpoint
