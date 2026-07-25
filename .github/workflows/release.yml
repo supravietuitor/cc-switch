@@ -4,11 +4,11 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "鐗堟湰鍙凤紙鐢ㄤ簬浜х墿鍛藉悕锛屼緥濡?3.18.0锛?
+        description: "版本号（用于产物命名与 tag，例如 3.18.0）"
         required: true
         default: "0.0.0-ci"
       publish:
-        description: "鏋勫缓鍚庢槸鍚﹀彂甯冨埌 Release锛坒alse=浠呬笂浼?workflow 浜х墿锛?
+        description: "是否构建并发布（true=构建+发布；false=仅构建不发 Release）"
         required: false
         default: "true"
   push:
@@ -69,13 +69,12 @@ jobs:
       - name: Install frontend deps
         run: pnpm install --frozen-lockfile
 
-      - name: Prepare Tauri signing key (optional)
+      - name: Prepare Tauri signing key
         shell: bash
         run: |
           if [ -z "${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}" ]; then
-            echo "TAURI_SIGNING_PRIVATE_KEY not set 鈥?Tauri updater signing disabled."
+            echo "⚠ TAURI_SIGNING_PRIVATE_KEY not set — updater signing disabled"
             echo "TAURI_SIGNING_PRIVATE_KEY=" >> "$GITHUB_ENV"
-            echo "TAURI_SIGNING_KEY_B64=" >> "$GITHUB_ENV"
             exit 0
           fi
           RAW="${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}"
@@ -88,9 +87,8 @@ jobs:
           elif echo "$RAW" | grep -Eq '^[A-Za-z0-9+/=]+$'; then
             printf 'untrusted comment: tauri signing key\n%s\n' "$(printf '%s' "$RAW" | tr -d '\r\n')" > "$KEY_PATH"
           else
-            echo "TAURI_SIGNING_PRIVATE_KEY format not recognized 鈥?disabling signing."
+            echo "⚠ TAURI_SIGNING_PRIVATE_KEY format not recognized — disabling signing"
             echo "TAURI_SIGNING_PRIVATE_KEY=" >> "$GITHUB_ENV"
-            echo "TAURI_SIGNING_KEY_B64=" >> "$GITHUB_ENV"
             exit 0
           fi
           if command -v base64 >/dev/null 2>&1; then
@@ -112,7 +110,7 @@ jobs:
         shell: pwsh
         run: |
           Write-Host "=== bundles under src-tauri/target ==="
-          Get-ChildItem -Path src-tauri/target -Recurse -Include *.msi,*.exe,*.nsis,*.zip -ErrorAction SilentlyContinue |
+          Get-ChildItem -Path src-tauri/target -Recurse -Include *.msi,*.exe,*.nsis,*.sig,*.zip -ErrorAction SilentlyContinue |
             Select-Object FullName,Length
 
       - name: Prepare Windows x64 Assets
@@ -123,7 +121,7 @@ jobs:
           $VERSION = "v${{ steps.ver.outputs.version }}"
           $targetRoot = 'src-tauri/target/release'
 
-          # MSI installer (+ .sig if present)
+          # MSI installer (+ .sig if present, used by updater)
           $msi = Get-ChildItem -Path (Join-Path $targetRoot 'bundle/msi') -Recurse -Include *.msi -ErrorAction SilentlyContinue | Select-Object -First 1
           if (-not $msi) {
             $msi = Get-ChildItem -Path (Join-Path $targetRoot 'bundle') -Recurse -Include *.msi -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -135,26 +133,31 @@ jobs:
             $sigPath = "$($msi.FullName).sig"
             if (Test-Path $sigPath) {
               Copy-Item $sigPath (Join-Path release-assets "$dest.sig")
+              Write-Host "Signature copied: $dest.sig"
+            } else {
+              Write-Warning "No .sig for MSI — updater won't be able to verify this build"
             }
           } else {
-            Write-Warning 'No MSI installer found'
+            Write-Warning 'No MSI installer found'; exit 1
           }
 
-          # NSIS installer (if any; newer tauri also produces NSIS)
+          # NSIS installer (optional, newer tauri also emits it)
           $nsis = Get-ChildItem -Path (Join-Path $targetRoot 'bundle/nsis') -Recurse -Include *.exe -ErrorAction SilentlyContinue | Select-Object -First 1
           if ($nsis) {
             $dest = "CC-Switch-$VERSION-Windows-Setup.exe"
             Copy-Item $nsis.FullName (Join-Path release-assets $dest)
             Write-Host "NSIS setup copied: $dest"
+            $sigPath = "$($nsis.FullName).sig"
+            if (Test-Path $sigPath) { Copy-Item $sigPath (Join-Path release-assets "$dest.sig") }
           }
 
-          # Portable zip (exe only, not part of updater)
+          # Portable zip (exe only, NOT part of updater)
           $exePath = 'src-tauri/target/release/cc-switch.exe'
           if (Test-Path $exePath) {
             $portableDir = 'release-assets/CC-Switch-Portable'
             New-Item -ItemType Directory -Force -Path $portableDir | Out-Null
             Copy-Item $exePath $portableDir
-            @('# CC Switch portable build marker', 'portable=true') |
+            @('# CC Switch portable build marker','portable=true') |
               Set-Content -Path (Join-Path $portableDir 'portable.ini') -Encoding UTF8
             Compress-Archive -Path "$portableDir/*" -DestinationPath "release-assets/CC-Switch-$VERSION-Windows-Portable.zip" -Force
             Remove-Item -Recurse -Force $portableDir
@@ -208,3 +211,62 @@ jobs:
           files: release-assets/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  assemble-latest-json:
+    name: Assemble latest.json
+    runs-on: ubuntu-22.04
+    needs: publish-release
+    permissions:
+      contents: write
+    steps:
+      - name: Download all release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euxo pipefail
+          TAG="${{ github.event_name == 'workflow_dispatch' && format('v{0}', inputs.version) || github.ref_name }}"
+          mkdir -p dl
+          gh release download "$TAG" --dir dl --repo "$GITHUB_REPOSITORY" --clobber
+          ls -la dl
+
+      - name: Generate latest.json
+        env:
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.event_name == 'workflow_dispatch' && format('v{0}', inputs.version) || github.ref_name }}
+        run: |
+          set -euo pipefail
+          VERSION="${TAG#v}"
+          PUB_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          base_url="https://github.com/$REPO/releases/download/$TAG"
+          win_x64_url=""; win_x64_sig=""
+          shopt -s nullglob
+          for sig in dl/*.sig; do
+            base="${sig%.sig}"
+            fname=$(basename "$base")
+            sig_content=$(cat "$sig")
+            case "$fname" in
+              *-Windows-arm64.msi) ;;           # ignore arm64 (none built)
+              *-Windows.msi) win_x64_url="$base_url/$fname"; win_x64_sig="$sig_content";;
+            esac
+          done
+          {
+            echo '{'
+            echo "  \"version\": \"$VERSION\","
+            echo "  \"notes\": \"CC Switch $TAG\","
+            echo "  \"pub_date\": \"$PUB_DATE\","
+            echo '  "platforms": {'
+            if [ -n "$win_x64_url" ] && [ -n "$win_x64_sig" ]; then
+              echo "    \"windows-x86_64\": {\"signature\": \"$win_x64_sig\", \"url\": \"$win_x64_url\"}"
+            fi
+            echo '  }'
+            echo '}'
+          } > latest.json
+          echo "=== latest.json ==="; cat latest.json
+
+      - name: Upload latest.json to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euxo pipefail
+          TAG="${{ github.event_name == 'workflow_dispatch' && format('v{0}', inputs.version) || github.ref_name }}"
+          gh release upload "$TAG" latest.json --clobber --repo "$GITHUB_REPOSITORY"
