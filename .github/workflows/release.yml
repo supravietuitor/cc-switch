@@ -23,7 +23,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  release:
+  release-windows:
     runs-on: windows-2022
     environment: release
     steps:
@@ -83,6 +83,7 @@ jobs:
           if [ -n "${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}" ]; then
             echo "TAURI_SIGNING_PRIVATE_KEY_PASSWORD=${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}" >> "$GITHUB_ENV"
           fi
+
       - name: Build Tauri App (Windows x64)
         shell: pwsh
         run: pnpm tauri build
@@ -155,19 +156,147 @@ jobs:
           path: release-assets/*
           if-no-files-found: error
 
+  release-linux:
+    runs-on: ubuntu-22.04
+    environment: release
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve version
+        shell: bash
+        id: ver
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Linux system deps
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config curl wget file patchelf libssl-dev \
+            rpm flatpak flatpak-builder elfutils xdg-utils \
+            libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev
+          sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev \
+            || sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.0-dev
+          sudo apt-get install -y --no-install-recommends libsoup-3.0-dev \
+            || sudo apt-get install -y --no-install-recommends libsoup2.4-dev
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.12.3
+          run_install: false
+
+      - name: Get pnpm store directory
+        id: pnpm-store
+        shell: bash
+        run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+
+      - name: Setup pnpm cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.pnpm-store.outputs.path }}
+          key: ${{ runner.os }}-${{ runner.arch }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: ${{ runner.os }}-${{ runner.arch }}-pnpm-store-
+
+      - name: Install frontend deps
+        run: pnpm install --frozen-lockfile
+
+      - name: Prepare Tauri signing key
+        shell: bash
+        run: |
+          # Pass the secret straight through; tauri accepts the single-line base64
+          # private key produced by `tauri signer generate` as-is.
+          if [ -z "${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}" ]; then
+            echo "TAURI_SIGNING_PRIVATE_KEY not set - updater signing disabled"
+            echo "TAURI_SIGNING_PRIVATE_KEY=" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          echo "TAURI_SIGNING_PRIVATE_KEY=${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}" >> "$GITHUB_ENV"
+          if [ -n "${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}" ]; then
+            echo "TAURI_SIGNING_PRIVATE_KEY_PASSWORD=${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}" >> "$GITHUB_ENV"
+          fi
+
+      - name: Build Tauri App (Linux x64)
+        shell: bash
+        run: pnpm tauri build --bundles appimage,deb,rpm
+
+      - name: List generated bundles (debug)
+        if: always()
+        shell: bash
+        run: |
+          echo "=== bundles under src-tauri/target ==="
+          find src-tauri/target -maxdepth 5 -type f \( -name "*.AppImage" -o -name "*.deb" -o -name "*.rpm" -o -name "*.sig" \) 2>/dev/null \
+            | xargs -r ls -la
+
+      - name: Prepare Linux x64 Assets
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p release-assets
+          VERSION="v${{ steps.ver.outputs.version }}"
+          ARCH="x86_64"
+          BUNDLE="src-tauri/target/release/bundle"
+
+          APPIMAGE=$(find "$BUNDLE" -name "*.AppImage" | head -1 || true)
+          if [ -n "$APPIMAGE" ]; then
+            NEW="CC-Switch-$VERSION-Linux-$ARCH.AppImage"
+            cp "$APPIMAGE" "release-assets/$NEW"
+            [ -f "$APPIMAGE.sig" ] && cp "$APPIMAGE.sig" "release-assets/$NEW.sig" || echo "no .sig for AppImage"
+            echo "AppImage: $NEW"
+          else
+            echo "No AppImage found" >&2
+          fi
+
+          DEB=$(find "$BUNDLE" -name "*.deb" | head -1 || true)
+          if [ -n "$DEB" ]; then
+            cp "$DEB" "release-assets/CC-Switch-$VERSION-Linux-$ARCH.deb"; echo "Deb copied"
+          else
+            echo "No .deb found (optional)"
+          fi
+
+          RPM=$(find "$BUNDLE" -name "*.rpm" | head -1 || true)
+          if [ -n "$RPM" ]; then
+            cp "$RPM" "release-assets/CC-Switch-$VERSION-Linux-$ARCH.rpm"; echo "Rpm copied"
+          else
+            echo "No .rpm found (optional)"
+          fi
+
+      - name: Upload release artifacts to workflow
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-assets-Linux-x86_64
+          path: release-assets/*
+          if-no-files-found: error
+
   publish-release:
     name: Publish GitHub Release
     runs-on: ubuntu-22.04
     if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish == 'true')
-    needs: release
+    needs: [release-windows, release-linux]
     permissions:
       contents: write
     steps:
       - name: Download built release artifacts
         uses: actions/download-artifact@v4
         with:
-          name: release-assets-Windows-x64
+          pattern: release-assets-*
           path: release-assets
+          merge-multiple: true
 
       - name: List downloaded release artifacts
         shell: bash
@@ -221,14 +350,16 @@ jobs:
           PUB_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
           base_url="https://github.com/$REPO/releases/download/$TAG"
           win_x64_url=""; win_x64_sig=""
+          linux_x64_url=""; linux_x64_sig=""
           shopt -s nullglob
           for sig in dl/*.sig; do
             base="${sig%.sig}"
             fname=$(basename "$base")
             sig_content=$(cat "$sig")
             case "$fname" in
-              *-Windows-arm64.msi) ;;           # ignore arm64 (none built)
+              *-Windows-arm64.msi) ;;
               *-Windows.msi) win_x64_url="$base_url/$fname"; win_x64_sig="$sig_content";;
+              *-Linux-x86_64.AppImage) linux_x64_url="$base_url/$fname"; linux_x64_sig="$sig_content";;
             esac
           done
           {
@@ -237,8 +368,14 @@ jobs:
             echo "  \"notes\": \"CC Switch $TAG\","
             echo "  \"pub_date\": \"$PUB_DATE\","
             echo '  "platforms": {'
+            first=1
             if [ -n "$win_x64_url" ] && [ -n "$win_x64_sig" ]; then
               echo "    \"windows-x86_64\": {\"signature\": \"$win_x64_sig\", \"url\": \"$win_x64_url\"}"
+              first=0
+            fi
+            if [ -n "$linux_x64_url" ] && [ -n "$linux_x64_sig" ]; then
+              [ $first -eq 0 ] && echo ','
+              echo "    \"linux-x86_64\": {\"signature\": \"$linux_x64_sig\", \"url\": \"$linux_x64_url\"}"
             fi
             echo '  }'
             echo '}'
