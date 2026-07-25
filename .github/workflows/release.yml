@@ -1,4 +1,4 @@
-﻿name: Release
+name: Release
 
 on:
   push:
@@ -134,7 +134,9 @@ jobs:
         shell: bash
         run: |
           if [ -z "${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}" ]; then
-            echo "⚠ TAURI_SIGNING_PRIVATE_KEY not set — skipping code signing"
+            echo "⚠ TAURI_SIGNING_PRIVATE_KEY not set — disabling Tauri signing"
+            # Setting these to empty tells Tauri to skip code signing
+            echo "TAURI_SIGNING_PRIVATE_KEY=" >> "$GITHUB_ENV"
             echo "TAURI_SIGNING_KEY_B64=" >> "$GITHUB_ENV"
             exit 0
           fi
@@ -159,7 +161,8 @@ jobs:
                 printf '%s\n%s\n' "untrusted comment: tauri signing key" "$ONE" > "$KEY_PATH"
                 echo "✅ 使用一行 Base64 私钥，已构造两行文件"
               else
-                echo "⚠ TAURI_SIGNING_PRIVATE_KEY format not recognized — skipping code signing" >&2
+                echo "⚠ TAURI_SIGNING_PRIVATE_KEY format not recognized — disabling Tauri signing" >&2
+                echo "TAURI_SIGNING_PRIVATE_KEY=" >> "$GITHUB_ENV"
                 echo "TAURI_SIGNING_KEY_B64=" >> "$GITHUB_ENV"
                 exit 0
               fi
@@ -176,7 +179,8 @@ jobs:
             KEY_B64=$(KEY_PATH="$KEY_PATH" node -e "process.stdout.write(require('fs').readFileSync(process.env.KEY_PATH).toString('base64'))")
           fi
           if [ -z "$KEY_B64" ]; then
-            echo "⚠ 无法生成私钥 base64 内容，跳过代码签名" >&2
+            echo "⚠ 无法生成私钥 base64 内容，禁用 Tauri 签名" >&2
+            echo "TAURI_SIGNING_PRIVATE_KEY=" >> "$GITHUB_ENV"
             echo "TAURI_SIGNING_KEY_B64=" >> "$GITHUB_ENV"
             exit 0
           fi
