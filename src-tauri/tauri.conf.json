@@ -60,7 +60,7 @@
       }
     },
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEQyQ0YxMTNGNDA1MTRDM0UKUldRK1RGRkFQeEhQMG1sN1ZqNlBWQkxkRVpOM0VEZ3ZqUnN1d0JyTVJlUmNGUWxVM3h4M1JkUFg=",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEE5RUJEODUyQTBCNTNDOEEKdHZMNzZMcUxvdlkzVmkrejJrUWc5eEp4SjBVZy9tOEJaY1JjNVkrdzRwRT0=",
       "endpoints": [
         "https://github.com/supravietuitor/cc-switch/releases/latest/download/latest.json"
       ]
