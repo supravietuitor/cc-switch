@@ -72,35 +72,17 @@ jobs:
       - name: Prepare Tauri signing key
         shell: bash
         run: |
+          # Pass the secret straight through; tauri accepts the single-line base64
+          # private key produced by `tauri signer generate` as-is.
           if [ -z "${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}" ]; then
-            echo "⚠ TAURI_SIGNING_PRIVATE_KEY not set — updater signing disabled"
+            echo "TAURI_SIGNING_PRIVATE_KEY not set - updater signing disabled"
             echo "TAURI_SIGNING_PRIVATE_KEY=" >> "$GITHUB_ENV"
             exit 0
           fi
-          RAW="${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}"
-          KEY_PATH="$RUNNER_TEMP/tauri_signing.key"
-          if echo "$RAW" | head -n1 | grep -q '^untrusted comment:'; then
-            printf '%s\n' "$RAW" > "$KEY_PATH"
-          elif DECODED=$(printf '%s' "$RAW" | (base64 --decode 2>/dev/null || base64 -D 2>/dev/null)) \
-               && echo "$DECODED" | head -n1 | grep -q '^untrusted comment:'; then
-            printf '%s' "$DECODED" > "$KEY_PATH"
-          elif echo "$RAW" | grep -Eq '^[A-Za-z0-9+/=]+$'; then
-            printf 'untrusted comment: tauri signing key\n%s\n' "$(printf '%s' "$RAW" | tr -d '\r\n')" > "$KEY_PATH"
-          else
-            echo "⚠ TAURI_SIGNING_PRIVATE_KEY format not recognized — disabling signing"
-            echo "TAURI_SIGNING_PRIVATE_KEY=" >> "$GITHUB_ENV"
-            exit 0
-          fi
-          if command -v base64 >/dev/null 2>&1; then
-            KEY_B64=$(base64 < "$KEY_PATH" | tr -d '\r\n')
-          else
-            KEY_B64=$(KEY_PATH="$KEY_PATH" node -e "process.stdout.write(require('fs').readFileSync(process.env.KEY_PATH).toString('base64'))")
-          fi
-          echo "TAURI_SIGNING_PRIVATE_KEY=$KEY_B64" >> "$GITHUB_ENV"
+          echo "TAURI_SIGNING_PRIVATE_KEY=${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}" >> "$GITHUB_ENV"
           if [ -n "${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}" ]; then
             echo "TAURI_SIGNING_PRIVATE_KEY_PASSWORD=${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}" >> "$GITHUB_ENV"
           fi
-
       - name: Build Tauri App (Windows x64)
         shell: pwsh
         run: pnpm tauri build
