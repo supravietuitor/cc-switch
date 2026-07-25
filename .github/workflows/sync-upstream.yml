@@ -29,58 +29,135 @@ jobs:
           git remote add upstream https://github.com/farion1231/cc-switch.git
           git fetch upstream main --tags
 
+      - name: Detect what upstream changed
+        id: detect
+        shell: bash
+        run: |
+          set -euo pipefail
+          # fork main 最新 vs upstream main
+          BASE=$(git merge-base origin/main upstream/main)
+          CHANGED=$(git diff --name-only "$BASE" upstream/main || true)
+          echo "$CHANGED" > /tmp/upstream_changed.txt
+          echo "=== upstream changed files (since last merge-base) ==="
+          cat /tmp/upstream_changed.txt
+          # 上游是否动了 COS / S3 同步相关文件（即我们 fork 一直保的改动覆盖面）
+          COS_FILES='src-tauri/src/services/s3.rs
+          src-tauri/src/services/s3_sync.rs
+          src-tauri/src/services/s3_auto_sync.rs
+          src-tauri/src/commands/s3_sync.rs
+          src-tauri/src/settings.rs
+          src/components/settings/WebdavSyncSection.tsx'
+          COS_TOUCHED=0
+          while IFS= read -r f; do
+            if grep -qxF "$f" /tmp/upstream_changed.txt; then COS_TOUCHED=1; fi
+          done <<< "$COS_FILES"
+          echo "cos_upstream_touched=$COS_TOUCHED" >> "$GITHUB_OUTPUT"
+          echo "UPSTREAM_BASE=$BASE" >> "$GITHUB_ENV"
+          # 上游有无新提交
+          AHEAD=$(git rev-list --count "$BASE"..upstream/main || echo 0)
+          echo "ahead=$AHEAD" >> "$GITHUB_OUTPUT"
+          # 摘要：取最近上游提交标题
+          SUMMARY=$(git log --pretty=format:'%h %s' -n 8 "$BASE..upstream/main" | tr '\n' '|')
+          echo "summary=$SUMMARY" >> "$GITHUB_OUTPUT"
+
+      - name: Nothing to sync
+        if: steps.detect.outputs.ahead == '0'
+        shell: bash
+        run: echo "already in sync, no upstream new commits"
+
       - name: Create sync branch
+        if: steps.detect.outputs.ahead != '0'
         run: |
           BR="sync/upstream-$(date -u +%Y%m%d)"
           echo "BRANCH=$BR" >> "$GITHUB_ENV"
           git checkout -b "$BR" origin/main
 
-      - name: Merge upstream main (prefer fork on conflicts)
+      - name: Merge strategy by COS rule
+        if: steps.detect.outputs.ahead != '0'
+        shell: bash
+        env:
+          COS_TOUCHED: ${{ steps.detect.outputs.cos_upstream_touched }}
         run: |
           set -euo pipefail
-          if git merge upstream/main --no-edit -X ours; then
-            echo "merge ok"
+          if [ "$COS_TOUCHED" = "1" ]; then
+            echo "⚠ 上游动了 COS/S3 相关文件 — 视为上游已修 COS，全跟随上游（推广链接一并回归上游默认）"
+            git merge upstream/main --no-edit -X theirs
+            echo "COS_MODE=upstream_fixed" >> "$GITHUB_ENV"
           else
-            echo "merge had conflicts; -X ours should have auto-resolved; committing remainder"
-            git add -A
-            git commit --no-edit || true
+            echo "上游没动 COS — 保留 fork 改动（merge -X ours）+ 还原 release.yml/updater/推广"
+            git merge upstream/main --no-edit -X ours
+            echo "COS_MODE=fork_preserved" >> "$GITHUB_ENV"
           fi
 
-      - name: Restore fork-specific release/updater config
+      - name: Restore fork config (only when preserving fork)
+        if: steps.detect.outputs.ahead != '0' && steps.detect.outputs.cos_upstream_touched == '0'
         shell: bash
         run: |
           set -euo pipefail
-          # Keep fork release.yml verbatim
+          # 1) release.yml 保持 fork 版（强制 ours）
           git checkout origin/main -- .github/workflows/release.yml
 
-          if [ -f src-tauri/tauri.conf.json ]; then
-            node -e '
-              const fs = require("fs");
-              const PUBKEY = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEQyQ0YxMTNGNDA1MTRDM0UKUldRK1RGRkFQeEhQMG1sN1ZqNlBWQkxkRVpOM0VEZ3ZqUnN1d0JyTVJlUmNGUWxVM3h4M1JkUFg=";
-              const ENDPOINT = "https://github.com/supravietuitor/cc-switch/releases/latest/download/latest.json";
-              const p = "src-tauri/tauri.conf.json";
-              let cfg = fs.readFileSync(p, "utf8");
-              cfg = cfg.replace(/("pubkey"\s*:\s*")[^"]*(")/, `$1${PUBKEY}$2`);
-              cfg = cfg.replace(/https:\/\/github\.com\/[^"]+\/releases\/latest\/download\/latest\.json/, ENDPOINT);
-              fs.writeFileSync(p, cfg, "utf8");
-            '
-            git add src-tauri/tauri.conf.json
-          fi
+          # 2) tauri.conf.json: 还原 updater pubkey + endpoint
+          KEY2_PUBKEY="dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDE4QTg3RTBGMjBGMEU0OTMKUldTVDVQQWdEMzZvR0RYclhDVnJ5clRNVUlaMCtGRG9TS0xLbG9SaTMrTnFzTUpOSnhocWlyUEI="
+          ENDPOINT="https://github.com/supravietuitor/cc-switch/releases/latest/download/latest.json"
+          node -e '
+            const fs=require("fs");
+            const p="src-tauri/tauri.conf.json";
+            if(!fs.existsSync(p))process.exit(0);
+            let c=fs.readFileSync(p,"utf8");
+            const PUBKEY=process.argv[1], EP=process.argv[2];
+            c=c.replace(/("pubkey"\s*:\s*")[^"]*(")/, `$1${PUBKEY}$2`);
+            c=c.replace(/https:\/\/github\.com\/[^"]+\/releases\/latest\/download\/latest\.json/, EP);
+            fs.writeFileSync(p,c,"utf8");
+          ' "$KEY2_PUBKEY" "$ENDPOINT"
+          git add src-tauri/tauri.conf.json
+
+          # 3) OpenCode Go 推广链接还原为 fork owner ref（4 个 preset 文件）
+          MY_REF="R6Q6B79CYJ"
+          OLD_REF="2YTRG2NGTX"
+          for f in src/config/opencodeProviderPresets.ts src/config/codexProviderPresets.ts src/config/claudeProviderPresets.ts src/config/claudeDesktopProviderPresets.ts; do
+            [ -f "$f" ] && sed -i "s|opencode.ai/go?ref=${OLD_REF}|opencode.ai/go?ref=${MY_REF}|g" "$f" && git add "$f"
+          done
 
           git add .github/workflows/release.yml
-          git commit -m "chore(sync): preserve fork release.yml + updater config" || echo "nothing to commit"
+          git commit -m "chore(sync): preserve fork release.yml + updater pubkey + OpenCode Go promo" || echo "nothing to commit"
 
       - name: Push sync branch
-        run: |
-          git push origin "$BRANCH"
+        if: steps.detect.outputs.ahead != '0'
+        run: git push origin "$BRANCH"
 
       - name: Open / update PR
+        if: steps.detect.outputs.ahead != '0'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          TITLE="sync: upstream farion1231/cc-switch ($(date -u +%Y-%m-%d))"
-          gh pr create --base main --head "$BRANCH" --title "$TITLE" \
-            --body "Automated sync from upstream \`farion1231/cc-switch\` main. Fork-specific files (release.yml, updater pubkey/endpoint) are preserved." \
-            --draft || \
-          gh pr edit "$BRANCH" --title "$TITLE" || true
+          DATE=$(date -u +%Y-%m-%d)
+          TITLE="sync: upstream farion1231/cc-switch ($DATE)"
+          if [ "$COS_MODE" = "upstream_fixed" ]; then
+            BODY="上游动了 COS/S3 相关文件 — 视为上游已修 COS，本次**全跟随上游**（含推广链接一并回归上游默认，今后不再保留 fork COS 改动）。请人工合入。"
+          else
+            BODY="上游未动 COS — 已保留 fork 的 release.yml + updater pubkey + OpenCode Go 推广链接。请人工合入。"
+          fi
+          gh pr create --base main --head "$BRANCH" --title "$TITLE" --body "$BODY" --draft \
+            || gh pr edit "$BRANCH" --title "$TITLE" || true
+
+      - name: Notify Telegram
+        if: steps.detect.outputs.ahead != '0'
+        shell: bash
+        env:
+          TG_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT: ${{ secrets.TG_CHAT_ID }}
+        run: |
+          set -euo pipefail
+          [ -z "$TG_TOKEN" ] && { echo "no TG secret, skip"; exit 0; }
+          MODE="$COS_MODE"
+          SUM="${{ steps.detect.outputs.summary }}"
+          MSG="🔔 <b>cc-switch fork 自动同步</b>%0A上游有 <b>${{ steps.detect.outputs.ahead }}</b> 个新提交：%0A<i>${SUM//|/%0A}</i>"
+          if [ "$MODE" = "upstream_fixed" ]; then
+            MSG="$MSG%0A%0A⚠ <b>上游疑似已修 COS</b>：开了一个全跟随上游的 PR（推广链接一并回归上游）。建议合并后让 AI 复盘新代码。"
+          else
+            MSG="$MSG%0A%0A🟢 <b>上游未动 COS</b>：已保留 fork 改动（COS+推广+release）。建议合并该 PR 后让 AI 复盘新代码。"
+          fi
+          curl -s --max-time 25 -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
+            -d "chat_id=${TG_CHAT}" -d "parse_mode=HTML" -d "text=$MSG" || true
