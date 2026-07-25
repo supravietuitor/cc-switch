@@ -241,7 +241,7 @@ jobs:
         run: |
           echo "=== bundles under src-tauri/target ==="
           find src-tauri/target -maxdepth 5 -type f \( -name "*.AppImage" -o -name "*.deb" -o -name "*.rpm" -o -name "*.sig" \) 2>/dev/null \
-            | xargs -r ls -la
+            -exec ls -la {} \;
 
       - name: Prepare Linux x64 Assets
         shell: bash
