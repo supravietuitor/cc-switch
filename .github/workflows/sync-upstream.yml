@@ -41,36 +41,33 @@ jobs:
           if git merge upstream/main --no-edit -X ours; then
             echo "merge ok"
           else
-            echo "merge had conflicts; -X ours should have auto-resolved, committing remainder"
-            git status --short
-            git diff --name-only --diff-filter=U | true
-            # fallback: commit whatever is staged
+            echo "merge had conflicts; -X ours should have auto-resolved; committing remainder"
             git add -A
             git commit --no-edit || true
           fi
 
       - name: Restore fork-specific release/updater config
+        shell: bash
         run: |
           set -euo pipefail
-          # Ensure .github/workflows/release.yml stays the fork version (force ours)
+          # Keep fork release.yml verbatim
           git checkout origin/main -- .github/workflows/release.yml
 
-          # Restore fork updater pubkey + endpoint in tauri.conf.json
-          PUBKEY="dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEQyQ0YxMTNGNDA1MTRDM0UKUldRK1RGRkFQeEhQMG1sN1ZqNlBWQkxkRVpOM0VEZ3ZqUnN1d0JyTVJlUmNGUWxVM3h4M1JkUFg="
-          ENDPOINT="https://github.com/supravietuitor/cc-switch/releases/latest/download/latest.json"
-          node - <<'NODE'
-          const fs = require('fs');
-          const p = 'src-tauri/tauri.conf.json';
-          if (!fs.existsSync(p)) process.exit(0);
-          let cfg = fs.readFileSync(p, 'utf8');
-          const PUBKEY = process.argv[1];
-          const ENDPOINT = process.argv[2];
-          const pubkeyRe = /("pubkey"\s*:\s*")[^"]*(")/;
-          cfg = cfg.replace(pubkeyRe, `$1${PUBKEY}$2`);
-          cfg = cfg.replace(/https:\/\/github\.com\/[^"]+\/cc-switch\/releases\/latest\/download\/latest\.json/, ENDPOINT);
-          fs.writeFileSync(p, cfg, 'utf8');
-          NODE
-          git add .github/workflows/release.yml src-tauri/tauri.conf.json
+          if [ -f src-tauri/tauri.conf.json ]; then
+            node -e '
+              const fs = require("fs");
+              const PUBKEY = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEQyQ0YxMTNGNDA1MTRDM0UKUldRK1RGRkFQeEhQMG1sN1ZqNlBWQkxkRVpOM0VEZ3ZqUnN1d0JyTVJlUmNGUWxVM3h4M1JkUFg=";
+              const ENDPOINT = "https://github.com/supravietuitor/cc-switch/releases/latest/download/latest.json";
+              const p = "src-tauri/tauri.conf.json";
+              let cfg = fs.readFileSync(p, "utf8");
+              cfg = cfg.replace(/("pubkey"\s*:\s*")[^"]*(")/, `$1${PUBKEY}$2`);
+              cfg = cfg.replace(/https:\/\/github\.com\/[^"]+\/releases\/latest\/download\/latest\.json/, ENDPOINT);
+              fs.writeFileSync(p, cfg, "utf8");
+            '
+            git add src-tauri/tauri.conf.json
+          fi
+
+          git add .github/workflows/release.yml
           git commit -m "chore(sync): preserve fork release.yml + updater config" || echo "nothing to commit"
 
       - name: Push sync branch
