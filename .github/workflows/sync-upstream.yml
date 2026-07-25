@@ -1,0 +1,89 @@
+name: Sync Upstream
+
+on:
+  schedule:
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout fork main (full history)
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Add upstream and fetch
+        run: |
+          git remote add upstream https://github.com/farion1231/cc-switch.git
+          git fetch upstream main --tags
+
+      - name: Create sync branch
+        run: |
+          BR="sync/upstream-$(date -u +%Y%m%d)"
+          echo "BRANCH=$BR" >> "$GITHUB_ENV"
+          git checkout -b "$BR" origin/main
+
+      - name: Merge upstream main (prefer fork on conflicts)
+        run: |
+          set -euo pipefail
+          if git merge upstream/main --no-edit -X ours; then
+            echo "merge ok"
+          else
+            echo "merge had conflicts; -X ours should have auto-resolved, committing remainder"
+            git status --short
+            git diff --name-only --diff-filter=U | true
+            # fallback: commit whatever is staged
+            git add -A
+            git commit --no-edit || true
+          fi
+
+      - name: Restore fork-specific release/updater config
+        run: |
+          set -euo pipefail
+          # Ensure .github/workflows/release.yml stays the fork version (force ours)
+          git checkout origin/main -- .github/workflows/release.yml
+
+          # Restore fork updater pubkey + endpoint in tauri.conf.json
+          PUBKEY="dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEQyQ0YxMTNGNDA1MTRDM0UKUldRK1RGRkFQeEhQMG1sN1ZqNlBWQkxkRVpOM0VEZ3ZqUnN1d0JyTVJlUmNGUWxVM3h4M1JkUFg="
+          ENDPOINT="https://github.com/supravietuitor/cc-switch/releases/latest/download/latest.json"
+          node - <<'NODE'
+          const fs = require('fs');
+          const p = 'src-tauri/tauri.conf.json';
+          if (!fs.existsSync(p)) process.exit(0);
+          let cfg = fs.readFileSync(p, 'utf8');
+          const PUBKEY = process.argv[1];
+          const ENDPOINT = process.argv[2];
+          const pubkeyRe = /("pubkey"\s*:\s*")[^"]*(")/;
+          cfg = cfg.replace(pubkeyRe, `$1${PUBKEY}$2`);
+          cfg = cfg.replace(/https:\/\/github\.com\/[^"]+\/cc-switch\/releases\/latest\/download\/latest\.json/, ENDPOINT);
+          fs.writeFileSync(p, cfg, 'utf8');
+          NODE
+          git add .github/workflows/release.yml src-tauri/tauri.conf.json
+          git commit -m "chore(sync): preserve fork release.yml + updater config" || echo "nothing to commit"
+
+      - name: Push sync branch
+        run: |
+          git push origin "$BRANCH"
+
+      - name: Open / update PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TITLE="sync: upstream farion1231/cc-switch ($(date -u +%Y-%m-%d))"
+          gh pr create --base main --head "$BRANCH" --title "$TITLE" \
+            --body "Automated sync from upstream \`farion1231/cc-switch\` main. Fork-specific files (release.yml, updater pubkey/endpoint) are preserved." \
+            --draft || \
+          gh pr edit "$BRANCH" --title "$TITLE" || true
